@@ -9,11 +9,11 @@ create table if not exists public.settings (
   user_id uuid not null unique references auth.users(id) on delete cascade,
   child_name text not null default 'Eli',
   week_start integer not null default 1,
-  level1_min integer not null default 50,
-  level1_max integer not null default 79,
-  level2_min integer not null default 80,
-  level2_max integer not null default 120,
-  level3_min integer not null default 121,
+  level1_min integer not null default 120,
+  level1_max integer not null default 169,
+  level2_min integer not null default 170,
+  level2_max integer not null default 239,
+  level3_min integer not null default 240,
   youtube_penalty integer not null default 50,
   updated_at timestamptz not null default now()
 );
@@ -26,8 +26,18 @@ create table if not exists public.rules (
   points integer not null check (points > 0),
   type text not null check (type in ('earning','penalty')),
   active boolean not null default true,
+  frequency_label text not null default 'Cualquier día',
+  max_per_day integer,
+  max_per_week integer,
+  school_days_only boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Migración segura para instalaciones previas
+alter table public.rules add column if not exists frequency_label text not null default 'Cualquier día';
+alter table public.rules add column if not exists max_per_day integer;
+alter table public.rules add column if not exists max_per_week integer;
+alter table public.rules add column if not exists school_days_only boolean not null default false;
 
 create table if not exists public.rewards (
   id uuid primary key default gen_random_uuid(),
@@ -46,10 +56,22 @@ create table if not exists public.point_events (
   user_id uuid not null references auth.users(id) on delete cascade,
   rule_id uuid references public.rules(id) on delete set null,
   event_date date not null default current_date,
+  event_time time not null default current_time,
   points integer not null,
   note text not null default '',
+  type text not null default 'earning' check (type in ('earning','penalty')),
+  created_by text not null default 'adult' check (created_by in ('eli','adult')),
+  special boolean not null default false,
+  special_reason text,
   created_at timestamptz not null default now()
 );
+
+-- Migración segura para instalaciones previas
+alter table public.point_events add column if not exists event_time time not null default current_time;
+alter table public.point_events add column if not exists type text not null default 'earning';
+alter table public.point_events add column if not exists created_by text not null default 'adult';
+alter table public.point_events add column if not exists special boolean not null default false;
+alter table public.point_events add column if not exists special_reason text;
 
 alter table public.settings enable row level security;
 alter table public.rules enable row level security;

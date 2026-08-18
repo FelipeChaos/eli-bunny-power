@@ -1,4 +1,5 @@
 export type RuleType = 'earning' | 'penalty'
+export type CreatedBy = 'eli' | 'adult'
 
 export interface Rule {
   id: string
@@ -8,6 +9,10 @@ export interface Rule {
   points: number
   type: RuleType
   active: boolean
+  frequency_label: string
+  max_per_day: number | null
+  max_per_week: number | null
+  school_days_only: boolean
   created_at?: string
 }
 
@@ -16,8 +21,13 @@ export interface PointEvent {
   user_id: string
   rule_id: string | null
   event_date: string
+  event_time: string
   points: number
   note: string
+  type: RuleType
+  created_by: CreatedBy
+  special: boolean
+  special_reason: string | null
   created_at?: string
 }
 

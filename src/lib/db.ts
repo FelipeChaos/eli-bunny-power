@@ -11,9 +11,53 @@ interface LocalData {
   events: PointEvent[]
 }
 
+function normalizeRule(r: Partial<Rule>): Rule {
+  return {
+    id: r.id ?? crypto.randomUUID(),
+    user_id: r.user_id ?? 'local-user',
+    name: r.name ?? '',
+    description: r.description ?? '',
+    points: r.points ?? 0,
+    type: r.type ?? 'earning',
+    active: r.active ?? true,
+    frequency_label: r.frequency_label ?? 'Cualquier día',
+    max_per_day: r.max_per_day ?? null,
+    max_per_week: r.max_per_week ?? null,
+    school_days_only: r.school_days_only ?? false,
+    created_at: r.created_at,
+  }
+}
+
+function normalizeEvent(e: Partial<PointEvent>): PointEvent {
+  return {
+    id: e.id ?? crypto.randomUUID(),
+    user_id: e.user_id ?? 'local-user',
+    rule_id: e.rule_id ?? null,
+    event_date: e.event_date ?? new Date().toISOString().slice(0, 10),
+    event_time: e.event_time ?? '00:00',
+    points: e.points ?? 0,
+    note: e.note ?? '',
+    type: e.type ?? ((e.points ?? 0) < 0 ? 'penalty' : 'earning'),
+    created_by: e.created_by ?? 'adult',
+    special: e.special ?? false,
+    special_reason: e.special_reason ?? null,
+    created_at: e.created_at,
+  }
+}
+
 function localData(): LocalData {
   const raw = localStorage.getItem(LS)
-  if (raw) return JSON.parse(raw)
+  if (raw) {
+    const parsed = JSON.parse(raw) as LocalData
+    const migrated: LocalData = {
+      settings: parsed.settings,
+      rules: parsed.rules.map(normalizeRule),
+      rewards: parsed.rewards,
+      events: parsed.events.map(normalizeEvent),
+    }
+    saveLocal(migrated)
+    return migrated
+  }
   const user = 'local-user'
   const now = new Date().toISOString()
   const data: LocalData = {
@@ -47,13 +91,18 @@ export async function loadAll(userId?: string) {
     supabase.from('settings').select('*').eq('user_id', userId).single(),
     supabase.from('rules').select('*').eq('user_id', userId).order('type').order('created_at'),
     supabase.from('rewards').select('*').eq('user_id', userId).order('level').order('created_at'),
-    supabase.from('point_events').select('*').eq('user_id', userId).order('event_date', { ascending: false }).order('created_at', { ascending: false })
+    supabase.from('point_events').select('*').eq('user_id', userId).order('event_date', { ascending: false }).order('event_time', { ascending: false })
   ])
   if (s.error) throw s.error
   if (r.error) throw r.error
   if (rw.error) throw rw.error
   if (e.error) throw e.error
-  return { settings: s.data as Settings, rules: r.data as Rule[], rewards: rw.data as Reward[], events: e.data as PointEvent[] }
+  return {
+    settings: s.data as Settings,
+    rules: (r.data as Rule[]).map(normalizeRule),
+    rewards: rw.data as Reward[],
+    events: (e.data as PointEvent[]).map(normalizeEvent),
+  }
 }
 
 export async function updateSettings(userId: string, patch: Partial<Settings>) {
@@ -65,19 +114,35 @@ export async function updateSettings(userId: string, patch: Partial<Settings>) {
   return data as Settings
 }
 
-export async function saveRule(userId: string, rule: Partial<Rule> & { name: string; type: 'earning' | 'penalty'; points: number }) {
+export type RuleInput = Partial<Rule> & { name: string; type: 'earning' | 'penalty'; points: number }
+
+function ruleFields(rule: RuleInput) {
+  return {
+    name: rule.name,
+    description: rule.description ?? '',
+    points: rule.points,
+    type: rule.type,
+    active: rule.active ?? true,
+    frequency_label: rule.frequency_label ?? 'Cualquier día',
+    max_per_day: rule.max_per_day ?? null,
+    max_per_week: rule.max_per_week ?? null,
+    school_days_only: rule.school_days_only ?? false,
+  }
+}
+
+export async function saveRule(userId: string, rule: RuleInput) {
   if (!supabaseConfigured || !supabase) {
     const d = localData()
-    const item: Rule = { id: rule.id ?? crypto.randomUUID(), user_id: userId, name: rule.name, description: rule.description ?? '', points: rule.points, type: rule.type, active: rule.active ?? true }
+    const item: Rule = normalizeRule({ ...ruleFields(rule), id: rule.id, user_id: userId })
     const i = d.rules.findIndex(x => x.id === item.id)
     if (i >= 0) d.rules[i] = item; else d.rules.push(item)
     saveLocal(d); return item
   }
   const { data, error } = rule.id
-    ? await supabase.from('rules').update({ name: rule.name, description: rule.description ?? '', points: rule.points, type: rule.type, active: rule.active ?? true }).eq('id', rule.id).select().single()
-    : await supabase.from('rules').insert({ user_id: userId, name: rule.name, description: rule.description ?? '', points: rule.points, type: rule.type, active: rule.active ?? true }).select().single()
+    ? await supabase.from('rules').update(ruleFields(rule)).eq('id', rule.id).select().single()
+    : await supabase.from('rules').insert({ user_id: userId, ...ruleFields(rule) }).select().single()
   if (error) throw error
-  return data as Rule
+  return normalizeRule(data as Rule)
 }
 
 export async function deleteRule(userId: string, id: string) {
@@ -119,7 +184,7 @@ export async function addEvent(userId: string, event: Omit<PointEvent, 'id' | 'u
   }
   const { data, error } = await supabase.from('point_events').insert({ ...event, user_id: userId }).select().single()
   if (error) throw error
-  return data as PointEvent
+  return normalizeEvent(data as PointEvent)
 }
 
 export async function deleteEvent(userId: string, id: string) {
