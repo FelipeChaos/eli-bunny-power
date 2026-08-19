@@ -74,31 +74,54 @@ function saveLocal(data: LocalData) {
   localStorage.setItem(LS, JSON.stringify(data))
 }
 
-export async function seedUser(userId: string) {
-  if (!supabaseConfigured || !supabase) return
-  const { data: settings } = await supabase.from('settings').select('*').eq('user_id', userId).maybeSingle()
-  if (!settings) await supabase.from('settings').insert({ user_id: userId, ...defaultSettings })
-  const { count: ruleCount } = await supabase.from('rules').select('*', { count: 'exact', head: true }).eq('user_id', userId)
-  if (!ruleCount) await supabase.from('rules').insert(defaultRules.map(r => ({ ...r, user_id: userId })))
-  const { count: rewardCount } = await supabase.from('rewards').select('*', { count: 'exact', head: true }).eq('user_id', userId)
-  if (!rewardCount) await supabase.from('rewards').insert(defaultRewards.map(r => ({ ...r, user_id: userId })))
+async function ensureSettings(userId: string): Promise<Settings> {
+  const { data, error } = await supabase!.from('settings').select('*').eq('user_id', userId).maybeSingle()
+  if (error) throw error
+  if (data) return data as Settings
+  const { data: inserted, error: insertError } = await supabase!.from('settings').insert({ user_id: userId, ...defaultSettings }).select().single()
+  if (insertError) throw insertError
+  return inserted as Settings
+}
+
+async function ensureSeeded(table: 'rules' | 'rewards', userId: string, defaults: Record<string, unknown>[]) {
+  const { count, error } = await supabase!.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
+  if (error) throw error
+  if (!count) {
+    const { error: insertError } = await supabase!.from(table).insert(defaults.map(d => ({ ...d, user_id: userId })))
+    if (insertError) throw insertError
+  }
+}
+
+// Comprueba/crea settings, rules y rewards en una sola tanda paralela (evita round-trips secuenciales).
+export async function seedUser(userId: string): Promise<Settings> {
+  if (!supabaseConfigured || !supabase) throw new Error('Supabase no está configurado.')
+  const [settings] = await Promise.all([
+    ensureSettings(userId),
+    ensureSeeded('rules', userId, defaultRules),
+    ensureSeeded('rewards', userId, defaultRewards),
+  ])
+  return settings
 }
 
 export async function loadAll(userId?: string) {
   if (!supabaseConfigured || !supabase || !userId) return localData()
-  await seedUser(userId)
-  const [s, r, rw, e] = await Promise.all([
-    supabase.from('settings').select('*').eq('user_id', userId).single(),
+  const settings = await seedUser(userId)
+  if (import.meta.env.DEV) console.log('[DATA] settings cargados')
+  const [r, rw, e] = await Promise.all([
     supabase.from('rules').select('*').eq('user_id', userId).order('type').order('created_at'),
     supabase.from('rewards').select('*').eq('user_id', userId).order('level').order('created_at'),
     supabase.from('point_events').select('*').eq('user_id', userId).order('event_date', { ascending: false }).order('event_time', { ascending: false })
   ])
-  if (s.error) throw s.error
   if (r.error) throw r.error
   if (rw.error) throw rw.error
   if (e.error) throw e.error
+  if (import.meta.env.DEV) {
+    console.log('[DATA] reglas cargadas')
+    console.log('[DATA] premios cargados')
+    console.log('[DATA] eventos cargados')
+  }
   return {
-    settings: s.data as Settings,
+    settings,
     rules: (r.data as Rule[]).map(normalizeRule),
     rewards: rw.data as Reward[],
     events: (e.data as PointEvent[]).map(normalizeEvent),

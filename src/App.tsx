@@ -5,7 +5,7 @@ import { getAppUrl } from './lib/url'
 import { addEvent, deleteEvent, deleteReward, deleteRule, loadAll, saveReward, saveRule, updateSettings } from './lib/db'
 import type { PointEvent, Reward, Rule, RuleType, Settings } from './types'
 import { Bunny } from './components/Bunny'
-import { SuccessModal, ErrorModal, ConfirmDialog } from './components/Modal'
+import { Modal, SuccessModal, ErrorModal, ConfirmDialog } from './components/Modal'
 import { RuleFormModal } from './components/RuleFormModal'
 import { RewardFormModal } from './components/RewardFormModal'
 import { SpecialSituationModal } from './components/SpecialSituationModal'
@@ -108,22 +108,34 @@ function App() {
   const [editingReward, setEditingReward] = useState<Reward | undefined>(undefined)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmState>({ open: false, title: '', message: '', onConfirm: () => {} })
   const [errorModal, setErrorModal] = useState<ErrorState>({ open: false, message: '' })
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [slowLoad, setSlowLoad] = useState(false)
 
-  async function refresh(userId?: string) {
+  // Evita cargas duplicadas/concurrentes para el mismo usuario (getSession + onAuthStateChange pueden dispararse casi a la vez).
+  const loadingUserRef = useRef<string | null>(null)
+
+  async function loadUserData(userId: string) {
+    if (loadingUserRef.current === userId) return
+    loadingUserRef.current = userId
     setLoading(true)
+    setLoadError(null)
+    if (import.meta.env.DEV) console.log('[DATA] iniciando carga')
     try {
       const d = await loadAll(userId)
+      if (import.meta.env.DEV) console.log('[DATA] carga completada')
       setData(d)
     } catch (e: any) {
-      setToast(e.message || 'No fue posible cargar los datos.')
+      if (import.meta.env.DEV) console.error('[DATA] error de carga', e)
+      setLoadError(e?.message || 'No pudimos cargar los datos de Bunny Power.')
     } finally {
       setLoading(false)
+      loadingUserRef.current = null
     }
   }
 
   useEffect(() => {
     if (!supabaseConfigured || !supabase) {
-      refresh('local-user')
+      void loadUserData('local-user')
       return
     }
     const hash = window.location.hash
@@ -132,21 +144,35 @@ function App() {
       window.history.replaceState(null, '', window.location.pathname + window.location.search)
     }
     supabase.auth.getSession().then(({ data }) => {
+      if (import.meta.env.DEV) console.log('[AUTH] sesión detectada', Boolean(data.session))
       setSession(data.session)
-      if (data.session) refresh(data.session.user.id)
+      if (data.session?.user?.id) void loadUserData(data.session.user.id)
       else setLoading(false)
     })
+    // El callback debe permanecer síncrono y ligero: nunca llamar a Supabase directamente aquí
+    // (riesgo de deadlock). La carga de datos se difiere con setTimeout(0).
     const { data: listener } = supabase.auth.onAuthStateChange((event, s) => {
       if (event === 'PASSWORD_RECOVERY') {
         setResetOpen(true)
         return
       }
       setSession(s)
-      if (s) refresh(s.user.id)
-      else setData(null)
+      if (s?.user?.id) {
+        const uid = s.user.id
+        setTimeout(() => { void loadUserData(uid) }, 0)
+      } else {
+        setData(null)
+        setLoading(false)
+      }
     })
     return () => listener.subscription.unsubscribe()
   }, [])
+
+  useEffect(() => {
+    if (!loading) { setSlowLoad(false); return }
+    const t = setTimeout(() => setSlowLoad(true), 15000)
+    return () => clearTimeout(t)
+  }, [loading])
 
   useEffect(() => {
     if (!toast) return
@@ -386,7 +412,37 @@ function App() {
     )
   }
 
-  if (loading || !data) return <div className="loading">🐰 Preparando Bunny Power…{authModals}</div>
+  if (loading || !data) {
+    return (
+      <div className="loading">
+        🐰 Preparando Bunny Power…
+        {authModals}
+        <Modal
+          open={Boolean(loadError)}
+          title="No pudimos cargar los datos de Bunny Power."
+          icon="⚠️"
+          variant="error"
+          actions={<button className="primary big" onClick={() => void loadUserData(userId)}>Reintentar</button>}
+        >
+          <p>Verifica tu conexión e inténtalo nuevamente.</p>
+        </Modal>
+        <Modal
+          open={slowLoad && loading && !loadError}
+          title="Estamos tardando más de lo esperado."
+          icon="⏳"
+          variant="error"
+          actions={
+            <>
+              <button className="ghost" onClick={() => void loadUserData(userId)}>Reintentar</button>
+              <button className="primary big" onClick={logout}>Salir</button>
+            </>
+          }
+        >
+          <p>La carga de datos está tomando más tiempo del habitual.</p>
+        </Modal>
+      </div>
+    )
+  }
 
   const activeEarnings = data.rules.filter(r => r.active && r.type === 'earning')
   const activePenalties = data.rules.filter(r => r.active && r.type === 'penalty')
